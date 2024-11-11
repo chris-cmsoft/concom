@@ -2,15 +2,16 @@ package cmd
 
 import (
 	"fmt"
+	"log"
+	"os"
+	"os/exec"
+
 	"github.com/chris-cmsoft/concom/runner"
 	"github.com/chris-cmsoft/concom/runner/proto"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
 	"github.com/open-policy-agent/opa/rego"
 	"github.com/spf13/cobra"
-	"log"
-	"os"
-	"os/exec"
 )
 
 func AgentCmd() *cobra.Command {
@@ -30,7 +31,7 @@ with plugins to ensure continuous compliance.`,
 			}
 			err := runner.Run(cmd, args)
 			if err != nil {
-				log.Fatal(err)
+				logger.Error(fmt.Sprintf("%v", fmt.Errorf("%w", err)))
 			}
 		},
 	}
