@@ -151,9 +151,12 @@ func (ar AgentRunner) runInstance(
 		}
 
 		_, err = runnerInstance.Configure(&proto.ConfigureRequest{
+			// Config: map[string]string{
+			// 	"host": "127.0.0.1",
+			// 	"port": "22",
+			// },
 			Config: map[string]string{
-				"host": "127.0.0.1",
-				"port": "22",
+				"OSCAPContentPath": "/tmp/oscap-data",
 			},
 		})
 		if err != nil {
