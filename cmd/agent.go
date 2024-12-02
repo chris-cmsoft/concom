@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/chris-cmsoft/concom/internal"
@@ -23,6 +24,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
@@ -409,6 +411,55 @@ func (ar *AgentRunner) getRunnerInstance(logger hclog.Logger, path string) (runn
 	return runnerInstance, nil
 }
 
+func (ar *AgentRunner) DownloadArtifact(ctx context.Context, source string, ociOptions []remote.Option) (string, error) {
+	ar.logger.Trace("Checking for artifact source", "source", source)
+
+	// First we check if the source is a path that exists on the fs.
+	// If it does exist, it means we've been passed a binary, and we can just use it as is.
+	_, err := os.Stat(source)
+
+	if err == nil {
+		// The file exists. Just return it.
+		ar.logger.Debug("Found artifact locally", "Binary", source)
+		ar.pluginLocations[source] = source
+		return source, nil
+	}
+
+	if !os.IsNotExist(err) {
+		// The error we've received is something other than not exists.
+		// Exit early with the error
+		return "", err
+	}
+
+	if internal.IsOCI(source) {
+		ar.logger.Debug("Artifact looks like an OCI endpoint, attempting to download", "Source", source)
+
+		tag, err := name.NewTag(source)
+		if err != nil {
+			return "", err
+		}
+
+		destination := path.Join(AgentPluginDir, tag.RepositoryStr(), tag.Identifier())
+
+		downloaderImpl, err := oci.NewDownloader(
+			tag,
+			destination,
+		)
+		if err != nil {
+			return "", err
+		}
+		err = downloaderImpl.Download(ociOptions...)
+		if err != nil {
+			return "", err
+		}
+		ar.logger.Debug("Successfully downloaded artifact", "Source", source, "destination", destination)
+
+		return destination, nil
+	}
+
+	return "", err
+}
+
 // DownloadPlugins checks each item in the config and retrieves the source of the plugin
 // building a set of unique sources. It then checks if the source is a path that exists on
 // the filesystem, if it isn't, it will download the plugin to the filesystem.
@@ -426,61 +477,28 @@ func (ar *AgentRunner) DownloadPlugins() error {
 		pluginSources[*pluginConfig.Source] = struct{}{}
 	}
 
+	if ar.pluginLocations == nil {
+		ar.pluginLocations = map[string]string{}
+	}
+
+	ctx := context.TODO()
 	for source := range pluginSources {
-		ar.logger.Trace("Checking for plugin source", "source", source)
-
-		// First we check if the source is a path that exists on the fs.
-		// If it does exist, it means we've been passed a binary, and we can just use it as is.
-		_, err := os.ReadFile(source)
-
-		if err == nil {
-			// The file exists. Just return it.
-			ar.logger.Debug("Found plugin locally, using local binary", "Binary", source)
-			ar.pluginLocations[source] = source
-			continue
-		}
-
-		if !os.IsNotExist(err) {
-			// The error we've received is something other than not exists.
-			// Exit early with the error
+		output, err := ar.DownloadArtifact(ctx, source, []remote.Option{
+			remote.WithPlatform(v1.Platform{
+				Architecture: runtime.GOARCH,
+				OS:           runtime.GOOS,
+			}),
+		})
+		if err != nil {
 			return err
 		}
 
-		if internal.IsOCI(source) {
-			ar.logger.Debug("Plugin looks like an OCI endpoint, attempting to download", "Source", source)
-			tag, err := name.NewTag(source)
-			if err != nil {
-				return err
-			}
+		outputFile, _ := os.Stat(output)
 
-			destination := path.Join(AgentPluginDir, tag.RepositoryStr(), tag.Identifier())
-
-			downloaderImpl, err := oci.NewDownloader(
-				tag,
-				destination,
-			)
-			if err != nil {
-				return err
-			}
-			err = downloaderImpl.Download(remote.WithPlatform(v1.Platform{
-				Architecture: runtime.GOARCH,
-				OS:           runtime.GOOS,
-			}))
-			if err != nil {
-				return err
-			}
-			pluginBinary := path.Join(destination, "plugin")
-			ar.logger.Debug("Plugin downloaded successfully", "Destination", pluginBinary)
-
-			if ar.pluginLocations == nil {
-				ar.pluginLocations = map[string]string{}
-			}
-			// Update the source in the agent configuration to the new path
-			ar.pluginLocations[source] = pluginBinary
+		if outputFile.IsDir() {
+			ar.pluginLocations[source] = filepath.Join(output, "plugin")
 		} else {
-			ar.logger.Debug("Attempting to download artifact (TODO)", "Source", source)
-
-			// TODO We should download artifacts too
+			ar.pluginLocations[source] = output
 		}
 	}
 
